@@ -1,0 +1,36 @@
+{
+ "upwind (1st order)": {
+  "quantity": "min u on vertical centre line, Re = 100",
+  "meshes": [
+   64,
+   128,
+   256
+  ],
+  "values": [
+   -0.20014172114887147,
+   -0.20656244889408956,
+   -0.20937302463256682
+  ],
+  "observed_order": 1.191871133438939,
+  "richardson_extrapolated": -0.21156111421078055,
+  "GCI_fine_percent": 1.3063344609779923,
+  "ghia_value": -0.2109
+ },
+ "central, deferred correction (2nd order)": {
+  "quantity": "min u on vertical centre line, Re = 100",
+  "meshes": [
+   32,
+   64,
+   128
+  ],
+  "values": [
+   -0.20790934978413106,
+   -0.2124181886964361,
+   -0.21337562046700875
+  ],
+  "observed_order": 2.235514382513917,
+  "richardson_extrapolated": -0.21363373663300111,
+  "GCI_fine_percent": 0.15120996802928532,
+  "ghia_value": -0.2109
+ }
+}
