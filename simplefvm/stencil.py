@@ -1,6 +1,6 @@
 """Stencil and pre-computed finite-volume geometry.
 
-The course version recomputed every face length and distance inside the double loops of
+The first version recomputed every face length and distance inside the double loops of
 every operator, on every iteration. Here they are computed once, as arrays, when the
 Stencil2D is built. The per-cell methods (cell_type, get_neighbors, get_face_centers) are
 kept for readability and for user code that wants them.
@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 
 
-class Coordicate2D:  # name kept from the course version
+class Coordicate2D:  # name kept from the first version
     def __init__(self, x, y):
         self.x = x
         self.y = y

@@ -1,4 +1,4 @@
-"""SIMPLE outer loop (the same sequence as the course notebook's last cell)."""
+"""SIMPLE outer loop (the same sequence as the first version's run cell)."""
 from __future__ import annotations
 
 import time

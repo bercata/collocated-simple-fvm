@@ -1,4 +1,4 @@
-"""Field container (same name and fields as the course version, plus stored face mass fluxes)."""
+"""Field container (same name and fields as the first version, plus stored face mass fluxes)."""
 from __future__ import annotations
 
 import numpy as np
@@ -8,7 +8,7 @@ class SimpleFields2D:
     """Cell-centred fields with one ghost layer; ghosts hold wall values.
 
     The lid (north ghost row) moves with speed ``lid_velocity`` along the local wall tangent.
-    For a flat lid this is u = lid_velocity, v = 0, exactly as in the course version.
+    For a flat lid this is u = lid_velocity, v = 0, exactly as in the first version.
     ``vars`` holds extra transported scalars (for example Z and C for a flamelet extension).
     """
 

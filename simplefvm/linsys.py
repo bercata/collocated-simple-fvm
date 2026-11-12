@@ -1,4 +1,4 @@
-"""Linear-system assembly and boundary-condition helpers (course-version API, vectorised)."""
+"""Linear-system assembly and boundary-condition helpers (first-version API, vectorised)."""
 from __future__ import annotations
 
 import numpy as np
@@ -47,7 +47,7 @@ class FVLinearSystem:
         self.Aw[I] = diff_w[I] + np.maximum(flux_w[I], 0.0)
         self.An[I] = diff_n[I] + np.maximum(-flux_n[I], 0.0)
         self.As[I] = diff_s[I] + np.maximum(flux_s[I], 0.0)
-        # Ap = sum of neighbour coefficients (course version). This is consistent because the
+        # Ap = sum of neighbour coefficients (first version). This is consistent because the
         # convective fluxes are the Rhie-Chow fluxes, which satisfy continuity cell by cell.
         self.Ap[I] = self.Ae[I] + self.Aw[I] + self.An[I] + self.As[I]
         self.Sp[I] = source[I] * vol
@@ -74,7 +74,7 @@ class BCManager:
     """Boundary conditions for additional transported scalars (future flamelet Z, C).
 
     Directions follow the package convention: i = 0 west, i = nx-1 east, j = 0 south,
-    j = ny-1 north. (The course version mapped i = 0 to 'north'; that is corrected here.)
+    j = ny-1 north. (The first version mapped i = 0 to 'north'; that is corrected here.)
     Supported per-side types: 'dirichlet' (value), 'neumann' (zero gradient).
     """
 

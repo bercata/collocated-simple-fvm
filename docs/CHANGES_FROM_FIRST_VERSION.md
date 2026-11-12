@@ -1,9 +1,8 @@
-# Changes from the course version
+# Changes from the first version
 
-The solver started as my implementation of the Chapter 3 exercise of *Computational
-Thermofluid Dynamics* (TU Munich, Professur für Thermofluiddynamik). The original notebook is
-kept unchanged in [`original/`](../original). The class layout and the SIMPLE sequence are the
-same, so code written against the course version still reads the same way:
+The first version of the solver was a single notebook. It is kept unchanged in
+[`original/`](../original). The class layout and the SIMPLE sequence are the same, so code
+written against the first version still reads the same way:
 
 ```
 MomentumEquationSolver.solve(u) -> solve(v) -> RhieChowPressureCorrection.solve
@@ -12,7 +11,7 @@ MomentumEquationSolver.solve(u) -> solve(v) -> RhieChowPressureCorrection.solve
 
 ## Corrections
 
-| # | Where | Course version | Now |
+| # | Where | First version | Now |
 |---|---|---|---|
 | 1 | `RhieChowPressureCorrection`, north faces | The direct pressure difference was taken in **x** (`P[i+1,j+1] - P[i,j+1]`) | `p_N - p_P` across the face, in y |
 | 2 | `RhieChowPressureCorrection`, wall faces | Wall coefficients were not zeroed and the ghost p' stayed 0, so p' = 0 was imposed on every wall | Wall coefficients are zero (zero-gradient p'); one cell is pinned to remove the constant null space |

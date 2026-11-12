@@ -1,4 +1,4 @@
-"""Linear solvers and the SIMPLE building blocks (course-version classes, vectorised and corrected)."""
+"""Linear solvers and the SIMPLE building blocks (first-version classes, vectorised and corrected)."""
 from __future__ import annotations
 
 import numpy as np
@@ -16,7 +16,7 @@ class TDMA:
 
     One call performs ``sweeps`` alternating-direction passes: all x-lines are solved at once
     (vectorised over j), then all y-lines (vectorised over i). Ghost values are fixed boundary
-    data. The course version swept one line at a time in Python, which is the same method
+    data. The first version swept one line at a time in Python, which is the same method
     but roughly two orders of magnitude slower.
     """
 
@@ -83,7 +83,7 @@ class SparseDirect:
 class ConvergenceMonitor:
     """Tracks scaled residual histories and tests convergence.
 
-    ``update`` keeps the course-version signature (algebraic residual of one equation). The
+    ``update`` keeps the first-version signature (algebraic residual of one equation). The
     SIMPLE driver uses ``record`` with the already scaled residuals of all equations.
     """
 
@@ -122,13 +122,13 @@ class ConvergenceMonitor:
 class MomentumEquationSolver:
     """Assembles and (partially) solves one momentum component with TDMA sweeps.
 
-    The course version solved each momentum system to convergence with up to 550 sweeps per
+    The first version solved each momentum system to convergence with up to 550 sweeps per
     outer iteration. In SIMPLE that work is wasted, because the coefficients change at the
     next outer iteration; a few sweeps per outer iteration is the standard choice.
     """
 
     def __init__(self, stencil, X, Y, X_cor, Y_cor, inner_sweeps=2, gamma_dc=0.0):
-        self.gamma_dc = gamma_dc     # 0: first-order upwind (course version); 1: central via deferred correction
+        self.gamma_dc = gamma_dc     # 0: first-order upwind (first version); 1: central via deferred correction
         self.stencil = stencil
         self.X, self.Y, self.X_cor, self.Y_cor = X, Y, X_cor, Y_cor
         self.grad = FVM_grad(X, Y, X_cor, Y_cor, stencil)
@@ -186,7 +186,7 @@ class MomentumEquationSolver:
 class RhieChowPressureCorrection:
     """Pressure-correction (p') equation on the collocated grid with Rhie-Chow face fluxes.
 
-    Face velocity (normal component), as in the course version but along the face normal:
+    Face velocity (normal component), as in the first version but along the face normal:
         u_f = avg(u).n + avg(1/a_P) V_f [ avg(grad p).d_hat - (p_N - p_P)/|d| ]
     p' equation: a_f = rho_f avg(1/a_P) |S_f|^2 on interior faces and zero on walls
     (zero-gradient p'), source = - net mass outflow of the cell.
@@ -269,7 +269,7 @@ class RhieChowPressureCorrection:
                 if np.max(np.abs(R)) < self.tol:
                     break
 
-        # zero-gradient p' in the ghosts (the course version left them at 0, i.e. p' = 0 on walls)
+        # zero-gradient p' in the ghosts (the first version left them at 0, i.e. p' = 0 on walls)
         p_prime[0, :], p_prime[-1, :] = p_prime[1, :], p_prime[-2, :]
         p_prime[:, 0], p_prime[:, -1] = p_prime[:, 1], p_prime[:, -2]
 
@@ -281,7 +281,7 @@ class RhieChowPressureCorrection:
 
 
 class PressureVelocityCorrector:
-    """SIMPLE correction step (same order as the course version):
+    """SIMPLE correction step (same order as the first version):
     1. P <- P + alpha_p p'   2. u, v <- u, v - (V/a_P) grad p'   3. zero-gradient P ghosts
     4. gauge: subtract the pressure of one interior cell.
     """

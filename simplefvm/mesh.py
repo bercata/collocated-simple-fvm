@@ -1,6 +1,6 @@
 """Structured 2-D mesh with a (possibly curved) top wall.
 
-Index convention used everywhere in this package (unchanged from the course version):
+Index convention used everywhere in this package (unchanged from the first version):
 
     i  -> x direction (west -> east),  j -> y direction (south -> north)
     cell-centred arrays have shape (M+2, M+2): interior cells 1..M, one ghost layer

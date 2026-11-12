@@ -111,11 +111,10 @@ same mesh ([`scripts/benchmark_original.py`](scripts/benchmark_original.py)).
 
 ## Project history
 
-I first wrote this solver for the Computational Thermofluid Dynamics course at TU Munich, then
-rebuilt it as a stand-alone project. The changes from the first version, including the bugs found
-and fixed during verification, are listed in
-[`docs/CHANGES_FROM_COURSE_VERSION.md`](docs/CHANGES_FROM_COURSE_VERSION.md). That first version
-is kept in [`original/`](original).
+I first wrote this solver as a single notebook, then rebuilt it as a stand-alone package. The
+changes from the first version, including the bugs found and fixed during verification, are
+listed in [`docs/CHANGES_FROM_FIRST_VERSION.md`](docs/CHANGES_FROM_FIRST_VERSION.md). That first
+version is kept in [`original/`](original).
 
 ## Reference
 

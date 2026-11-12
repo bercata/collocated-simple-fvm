@@ -1,4 +1,4 @@
-"""Finite-volume operators (vectorised; same class names and call signatures as the course version)."""
+"""Finite-volume operators (vectorised; same class names and call signatures as the first version)."""
 from __future__ import annotations
 
 import numpy as np
@@ -15,7 +15,7 @@ class FVM_grad:
 
     Face values are the arithmetic mean of the two cells; on a wall face the ghost value
     (which sits on the face centre) is used directly. On a uniform rectangular mesh this is
-    the same central difference as the course version.
+    the same central difference as the first version.
     """
 
     def __init__(self, X, Y, X_cor, Y_cor, stencil: Stencil2D):
@@ -42,7 +42,7 @@ class FVM_div:
 
     If face mass fluxes from the Rhie-Chow step are supplied (``mflux``), they are used: they are
     the fluxes that satisfy continuity, so the transported quantity is conserved cell by cell.
-    Without them (first iteration) the course-version estimate from averaged cell velocities is
+    Without them (first iteration) the first-version estimate from averaged cell velocities is
     used. Wall faces carry no mass.
     """
 

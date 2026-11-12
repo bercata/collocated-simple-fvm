@@ -1,6 +1,6 @@
-"""Cost of one SIMPLE outer iteration: course notebook code vs. this package (same mesh).
+"""Cost of one SIMPLE outer iteration: first-version code vs. this package (same mesh).
 
-The course code is executed from original/simple_original.py (cells 1-15 only).
+The first-version code is executed from original/simple_original.py (cells 1-15 only).
 """
 import os
 import re
@@ -49,5 +49,5 @@ if __name__ == "__main__":
     M = 20
     t_old = one_outer_original(M)
     t_new = one_outer_new(M)
-    print(f"{M}x{M}: course code {t_old:.2f} s per outer iteration, "
+    print(f"{M}x{M}: first-version code {t_old:.2f} s per outer iteration, "
           f"this package {t_new * 1000:.1f} ms, speed-up {t_old / t_new:.0f}x")
