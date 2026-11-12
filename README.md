@@ -96,7 +96,7 @@ The first version of this solver used per-cell Python loops and solved each mome
 full convergence (up to 550 TDMA sweeps) at every outer iteration. Precomputing the geometry,
 vectorising every operator and the line solver, limiting the momentum solve to two sweeps and
 solving the pressure correction directly makes one outer iteration about 150 times cheaper on the
-same mesh ([`scripts/benchmark_original.py`](scripts/benchmark_original.py)).
+same mesh.
 
 ## Limitations and next steps
 
@@ -113,8 +113,7 @@ same mesh ([`scripts/benchmark_original.py`](scripts/benchmark_original.py)).
 
 I first wrote this solver as a single notebook, then rebuilt it as a stand-alone package. The
 changes from the first version, including the bugs found and fixed during verification, are
-listed in [`docs/CHANGES_FROM_FIRST_VERSION.md`](docs/CHANGES_FROM_FIRST_VERSION.md). That first
-version is kept in [`original/`](original).
+listed in [`docs/CHANGES_FROM_FIRST_VERSION.md`](docs/CHANGES_FROM_FIRST_VERSION.md).
 
 ## Reference
 

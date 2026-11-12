@@ -1,8 +1,7 @@
 # Changes from the first version
 
-The first version of the solver was a single notebook. It is kept unchanged in
-[`original/`](../original). The class layout and the SIMPLE sequence are the same, so code
-written against the first version still reads the same way:
+The first version of the solver was a single notebook. The class layout and the SIMPLE sequence
+are the same, so code written against the first version still reads the same way:
 
 ```
 MomentumEquationSolver.solve(u) -> solve(v) -> RhieChowPressureCorrection.solve
@@ -45,8 +44,7 @@ MomentumEquationSolver.solve(u) -> solve(v) -> RhieChowPressureCorrection.solve
 - The pressure-correction equation is solved directly with SciPy's sparse LU (`SparseDirect`).
   The TDMA path is still available with `linear_solver="tdma"`.
 
-Measured cost of one outer iteration on the same 20 x 20 mesh: see `scripts/benchmark_original.py`
-and the README.
+The resulting speed-up is summarised in the README.
 
 ## Not changed on purpose
 
