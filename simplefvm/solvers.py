@@ -55,13 +55,30 @@ class SparseDirect:
     """
 
     @staticmethod
+    def factorize(phi, *, Aw, Ap, Ae, As, An, pin=None):
+        I = (slice(1, -1), slice(1, -1))
+        M = phi.shape[0] - 2
+        aP = Ap[I].copy()
+        aE, aW, aN, aS = Ae[I].copy(), Aw[I].copy(), An[I].copy(), As[I].copy()
+        aE[-1, :] = 0.0; aW[0, :] = 0.0; aN[:, -1] = 0.0; aS[:, 0] = 0.0
+        if pin is not None:
+            pi, pj, val = pin
+            k = (pi - 1, pj - 1)
+            aP[k] = 1.0
+            aE[k] = aW[k] = aN[k] = aS[k] = 0.0
+        N = M * M
+        A = sp.diags(
+            [aP.ravel(), -aE[:-1].ravel(), -aW[1:].ravel(), -aN.ravel()[:-1], -aS.ravel()[1:]],
+            [0, M, -M, 1, -1], shape=(N, N), format="csc")
+        return spla.splu(A)
+
+    @staticmethod
     def solve(phi, *, Aw, Ap, Ae, As, An, Sp, pin=None):
         I = (slice(1, -1), slice(1, -1))
         M = phi.shape[0] - 2
         aP = Ap[I].copy()
         aE, aW, aN, aS = Ae[I].copy(), Aw[I].copy(), An[I].copy(), As[I].copy()
         rhs = Sp[I].copy()
-        # couplings to ghost cells move to the right-hand side
         rhs[-1, :] += aE[-1, :] * phi[-1, 1:-1]; aE[-1, :] = 0.0
         rhs[0, :] += aW[0, :] * phi[0, 1:-1];    aW[0, :] = 0.0
         rhs[:, -1] += aN[:, -1] * phi[1:-1, -1]; aN[:, -1] = 0.0
@@ -157,6 +174,12 @@ class MomentumEquationSolver:
                         np.zeros((Nx, Ny)), self.X_cor, self.Y_cor, Dp=dp, vol=self.stencil.vol)
         if self.gamma_dc > 0.0:
             self._deferred_correction(ls, var, fields.mflux_x, fields.mflux_y)
+
+        # non-orthogonal diffusion correction
+        gvx, gvy = self.grad.compute_gradient(var)
+        src_noc = self.lap.nonorthogonal_correction_source(gvx, gvy, fields.mu)
+        ls.Sp[1:-1, 1:-1] += src_noc[1:-1, 1:-1]
+
         ls.apply_under_relax(phi_old=var, alpha=alpha)
 
         # scaled residual before the inner solve (relaxation terms cancel at phi_old)
@@ -195,12 +218,14 @@ class RhieChowPressureCorrection:
     """
 
     def __init__(self, stencil, X, Y, X_cor, Y_cor, reference=(1, 1, 0.0),
-                 tol=1e-8, max_inner=500, linear_solver="direct"):
+                 tol=1e-8, max_inner=500, linear_solver="direct",
+                 n_nonorth_correctors=0):
         self.s = stencil
         self.X, self.Y, self.X_cor, self.Y_cor = X, Y, X_cor, Y_cor
         self.reference = reference
         self.tol, self.max_inner = tol, max_inner
         self.linear_solver = linear_solver
+        self.n_nonorth_correctors = n_nonorth_correctors
         self.grad = FVM_grad(X, Y, X_cor, Y_cor, stencil)
         self.m, self.n = X.shape
         self.mass_residual = np.inf
@@ -234,10 +259,10 @@ class RhieChowPressureCorrection:
         return m, a
 
     def solve(self, fields):
+        s = self.s
         f = fields
         DpU = np.zeros_like(f.U); DpU[1:-1, 1:-1] = 1.0 / (f.Ap_u[1:-1, 1:-1] + 1e-30)
         DpV = np.zeros_like(f.V); DpV[1:-1, 1:-1] = 1.0 / (f.Ap_v[1:-1, 1:-1] + 1e-30)
-        # 1/a_P on the ghosts: copy the adjacent cell so wall-adjacent averages stay one-sided
         for D in (DpU, DpV):
             D[0, :], D[-1, :], D[:, 0], D[:, -1] = D[1, :], D[-2, :], D[:, 1], D[:, -2]
         f.DpU, f.DpV = DpU, DpV
@@ -252,30 +277,86 @@ class RhieChowPressureCorrection:
         Ae[I], Aw[I] = ax[1:], ax[:-1]
         An[I], As[I] = ay[:, 1:], ay[:, :-1]
         Ap[I] = Ae[I] + Aw[I] + An[I] + As[I]
-        Sp[I] = -(mx[1:] - mx[:-1] + my[:, 1:] - my[:, :-1])
-        self.mass_residual = float(np.sum(np.abs(Sp[I])))
+        Sp0 = -(mx[1:] - mx[:-1] + my[:, 1:] - my[:, :-1])
+        self.mass_residual = float(np.sum(np.abs(Sp0)))
+
+        eps = 1e-30
+
+        # alpha = |S_f|^2 / (S_f . d_f)  (over-relaxed factor)
+        alpha_x = np.divide(s.Sx_mag * s.Sx_mag, s.Sx_dot_dx + eps)
+        alpha_y = np.divide(s.Sy_mag * s.Sy_mag, s.Sy_dot_dy + eps)
+
+        dnoc_x = np.zeros_like(mx)
+        dnoc_y = np.zeros_like(my)
 
         p_prime = np.zeros(shp)
+        M = shp[0] - 2
         if self.linear_solver == "direct":
-            SparseDirect.solve(p_prime, Aw=Aw, Ap=Ap, Ae=Ae, As=As, An=An, Sp=Sp, pin=self.reference)
-        else:
-            ri, rj, rv = self.reference
-            Ap[ri, rj], Sp[ri, rj] = 1.0, rv
-            Aw[ri, rj] = Ae[ri, rj] = As[ri, rj] = An[ri, rj] = 0.0
-            for _ in range(self.max_inner):
-                TDMA.solve_line(p_prime, Aw=Aw, Ap=Ap, Ae=Ae, As=As, An=An, Sp=Sp)
-                R = (Ap[I] * p_prime[I] - Aw[I] * p_prime[:-2, 1:-1] - Ae[I] * p_prime[2:, 1:-1]
-                     - As[I] * p_prime[1:-1, :-2] - An[I] * p_prime[1:-1, 2:] - Sp[I])
-                if np.max(np.abs(R)) < self.tol:
-                    break
+            lu = SparseDirect.factorize(p_prime, Aw=Aw, Ap=Ap, Ae=Ae, As=As, An=An,
+                                        pin=self.reference)
+        for k in range(self.n_nonorth_correctors + 1):
+            div_noc = dnoc_x[1:] - dnoc_x[:-1] + dnoc_y[:, 1:] - dnoc_y[:, :-1]
+            Sp[I] = Sp0 + div_noc
 
-        # zero-gradient p' in the ghosts (the first version left them at 0, i.e. p' = 0 on walls)
+            if self.linear_solver == "direct":
+                rhs = Sp[I].copy()
+                rhs[-1, :] += Ae[I][-1, :] * p_prime[-1, 1:-1]
+                rhs[0, :] += Aw[I][0, :] * p_prime[0, 1:-1]
+                rhs[:, -1] += An[I][:, -1] * p_prime[1:-1, -1]
+                rhs[:, 0] += As[I][:, 0] * p_prime[1:-1, 0]
+                ri, rj, rv = self.reference
+                rhs[ri - 1, rj - 1] = rv
+                p_prime[I] = lu.solve(rhs.ravel()).reshape(M, M)
+            else:
+                ri, rj, rv = self.reference
+                Ap[ri, rj], Sp[ri, rj] = 1.0, rv
+                Aw[ri, rj] = Ae[ri, rj] = As[ri, rj] = An[ri, rj] = 0.0
+                for _ in range(self.max_inner):
+                    TDMA.solve_line(p_prime, Aw=Aw, Ap=Ap, Ae=Ae, As=As, An=An, Sp=Sp)
+                    R = (Ap[I] * p_prime[I] - Aw[I] * p_prime[:-2, 1:-1]
+                         - Ae[I] * p_prime[2:, 1:-1] - As[I] * p_prime[1:-1, :-2]
+                         - An[I] * p_prime[1:-1, 2:] - Sp[I])
+                    if np.max(np.abs(R)) < self.tol:
+                        break
+
+            if k < self.n_nonorth_correctors:
+                gpx, gpy = self.grad.compute_gradient(p_prime)
+                # x-face non-orthogonal mass flux:
+                #   dnoc = rho_f * (V/a_P)_f * (grad p')_f . (S_f - alpha * d_f)
+                #   (V/a_P)_f = dpf * V_face  with V_face = Sx_dot_dx
+                noc_xvec = s.Sx_x - alpha_x * s.dx_x
+                noc_yvec = s.Sx_y - alpha_x * s.dx_y
+                gx_f = 0.5 * (gpx[:-1, 1:-1] + gpx[1:, 1:-1])
+                gy_f = 0.5 * (gpy[:-1, 1:-1] + gpy[1:, 1:-1])
+                dnoc_x = (x_face_avg(f.rho) * x_face_avg(f.DpU)
+                          * s.Sx_dot_dx
+                          * (noc_xvec * gx_f + noc_yvec * gy_f))
+                dnoc_x[~s.x_interior] = 0.0
+                # y-face
+                noc_xvec = s.Sy_x - alpha_y * s.dy_x
+                noc_yvec = s.Sy_y - alpha_y * s.dy_y
+                gx_f = 0.5 * (gpx[1:-1, :-1] + gpx[1:-1, 1:])
+                gy_f = 0.5 * (gpy[1:-1, :-1] + gpy[1:-1, 1:])
+                dnoc_y = (y_face_avg(f.rho) * y_face_avg(f.DpV)
+                          * s.Sy_dot_dy
+                          * (noc_xvec * gx_f + noc_yvec * gy_f))
+                dnoc_y[~s.y_interior] = 0.0
+
+        # zero-gradient p' in ghosts
         p_prime[0, :], p_prime[-1, :] = p_prime[1, :], p_prime[-2, :]
         p_prime[:, 0], p_prime[:, -1] = p_prime[:, 1], p_prime[:, -2]
 
-        # corrected, continuity-satisfying face mass fluxes
-        f.mflux_x = mx - ax * (p_prime[1:, 1:-1] - p_prime[:-1, 1:-1])
-        f.mflux_y = my - ay * (p_prime[1:-1, 1:] - p_prime[1:-1, :-1])
+        # face mass fluxes with implicit part + explicit non-orthogonal part
+        # both use the dnoc that was used in the last p' solve
+        f.mflux_x = (mx - ax * (p_prime[1:, 1:-1] - p_prime[:-1, 1:-1])
+                     - dnoc_x)
+        f.mflux_y = (my - ay * (p_prime[1:-1, 1:] - p_prime[1:-1, :-1])
+                     - dnoc_y)
+
+        div_corr = np.abs(f.mflux_x[1:] - f.mflux_x[:-1]
+                          + f.mflux_y[:, 1:] - f.mflux_y[:, :-1])
+        self.post_corr_imbalance = float(np.max(div_corr))
+
         f.p_prime = p_prime
         return p_prime
 

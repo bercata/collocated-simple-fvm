@@ -49,6 +49,7 @@ class Stencil2D:
         nx_, ny_ = X[1:M + 2, 1:M + 1], Y[1:M + 2, 1:M + 1]  # neighbour (east side)
         self.dx_x, self.dx_y = nx_ - px, ny_ - py
         self.dx_mag = np.hypot(self.dx_x, self.dx_y)
+        self.Sx_dot_dx = self.Sx_x * self.dx_x + self.Sx_y * self.dx_y
 
         # y-faces: edge from vertex (i-1, j) to (i, j)
         dx = Xc[1:, :] - Xc[:-1, :]
@@ -59,6 +60,7 @@ class Stencil2D:
         nx_, ny_ = X[1:M + 1, 1:M + 2], Y[1:M + 1, 1:M + 2]  # neighbour (north side)
         self.dy_x, self.dy_y = nx_ - px, ny_ - py
         self.dy_mag = np.hypot(self.dy_x, self.dy_y)
+        self.Sy_dot_dy = self.Sy_x * self.dy_x + self.Sy_y * self.dy_y
 
         # cell volumes (shoelace, corners SW -> SE -> NE -> NW)
         x0, y0 = Xc[:-1, :-1], Yc[:-1, :-1]

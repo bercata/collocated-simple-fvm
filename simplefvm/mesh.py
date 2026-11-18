@@ -29,17 +29,34 @@ def formfunction(x, shape: str, H1: float, H2: float, L: float):
     raise ValueError(f"Unknown shape: {shape}")
 
 
-def setUpMesh(M: int, H1: float, H2: float, L: float, shape: str
+def setUpMesh(M: int, H1: float, H2: float, L: float, shape: str,
+              beta_deg: float = None, side_length: float = None
               ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return X, Y (cell centres incl. ghosts, (M+2, M+2)) and X_cor, Y_cor (vertices, (M+1, M+1)).
 
     Vertical grid lines are equally spaced in x; each one is divided into M equal
     cells between y = 0 and the top wall, so the mesh follows a curved lid.
+
+    shape 'parallelogram': side walls inclined at beta_deg (leaning right), bottom
+    wall L long, side walls of length *side_length* (default L).  The lid is parallel
+    to the bottom wall.  Grid lines are parallel to the walls, uniform M x M.
     """
-    x_nodes = np.linspace(0.0, L, M + 1)
-    top = np.asarray(formfunction(x_nodes, shape, H1, H2, L), dtype=float)
-    X_cor = np.repeat(x_nodes[:, None], M + 1, axis=1)
-    Y_cor = top[:, None] * np.linspace(0.0, 1.0, M + 1)[None, :]
+    if shape == "parallelogram":
+        b = np.radians(beta_deg)
+        cb, sb = np.cos(b), np.sin(b)
+        sl = side_length if side_length is not None else L
+        xi = np.linspace(0, 1, M + 1)
+        eta = np.linspace(0, 1, M + 1)
+        X_cor = np.empty((M + 1, M + 1))
+        Y_cor = np.empty((M + 1, M + 1))
+        for j in range(M + 1):
+            X_cor[:, j] = xi * L + eta[j] * sl * cb
+            Y_cor[:, j] = eta[j] * sl * sb
+    else:
+        x_nodes = np.linspace(0.0, L, M + 1)
+        top = np.asarray(formfunction(x_nodes, shape, H1, H2, L), dtype=float)
+        X_cor = np.repeat(x_nodes[:, None], M + 1, axis=1)
+        Y_cor = top[:, None] * np.linspace(0.0, 1.0, M + 1)[None, :]
 
     X = np.zeros((M + 2, M + 2))
     Y = np.zeros_like(X)

@@ -3,8 +3,7 @@
 Table I: u along the vertical line through the cavity centre (x = 0.5).
 Table II: v along the horizontal line through the cavity centre (y = 0.5).
 
-Table I was cross-checked against an independent transcription
-(https://gist.github.com/ivan-pi/3e9326d18a366ffe6a8e5bfda6353219). The Re = 100 column of
+Table I was cross-checked against an independent transcription. The Re = 100 column of
 Table II was checked against the Ghia markers plotted in arXiv:2407.10093 (Fig. 12).
 The Re = 400 entry at x = 0.9063 (v = -0.23827) is widely suspected to be a misprint in the
 original table; it is kept as published and flagged in the plots.

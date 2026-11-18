@@ -69,27 +69,80 @@ class FVM_div:
 
 
 class FVM_laplacian:
-    """Diffusive conductances D_f = Gamma_f |S_f| / |d_f| (orthogonal part only).
+    """Diffusive conductances using the over-relaxed decomposition D_f = Gamma_f |S_f|^2 / (S_f.d_f).
 
-    On a wall face |d_f| is the distance from the cell centre to the wall (half a cell), which
-    gives the correct one-sided wall gradient. Non-orthogonal correction is not included; it
-    is exact on the rectangular cavity and an approximation on the curved-lid meshes.
+    On an orthogonal mesh S_f.d_f = |S_f| |d_f| and this reduces to the standard form.
+    Non-orthogonal correction is added as an explicit source term via
+    ``nonorthogonal_correction_source``.
     """
 
     def __init__(self, X, Y, X_cor, Y_cor, stencil: Stencil2D):
         self.s = stencil
         self.m, self.n = X.shape
 
+    def _conductance_x(self, Gamma):
+        s = self.s
+        denom = np.where(s.x_interior, s.Sx_dot_dx, 1.0)
+        Dx = x_face_avg(Gamma) * s.Sx_mag * s.Sx_mag / denom
+        Dx[~s.x_interior] = x_face_avg(Gamma)[~s.x_interior] * s.Sx_mag[~s.x_interior] ** 2 / s.Sx_dot_dx[~s.x_interior]
+        return Dx
+
+    def _conductance_y(self, Gamma):
+        s = self.s
+        denom = np.where(s.y_interior, s.Sy_dot_dy, 1.0)
+        Dy = y_face_avg(Gamma) * s.Sy_mag * s.Sy_mag / denom
+        Dy[~s.y_interior] = y_face_avg(Gamma)[~s.y_interior] * s.Sy_mag[~s.y_interior] ** 2 / s.Sy_dot_dy[~s.y_interior]
+        return Dy
+
     def compute_face_diffusion(self, phi, Gamma):
         s = self.s
-        Dx = x_face_avg(Gamma) * s.Sx_mag / s.dx_mag
-        Dy = y_face_avg(Gamma) * s.Sy_mag / s.dy_mag
+        Dx = self._conductance_x(Gamma)
+        Dy = self._conductance_y(Gamma)
         out = {k: np.zeros((self.m, self.n)) for k in ("Diff_e", "Diff_w", "Diff_n", "Diff_s")}
         out["Diff_e"][1:-1, 1:-1] = Dx[1:]
         out["Diff_w"][1:-1, 1:-1] = Dx[:-1]
         out["Diff_n"][1:-1, 1:-1] = Dy[:, 1:]
         out["Diff_s"][1:-1, 1:-1] = Dy[:, :-1]
         return out
+
+    def nonorthogonal_correction_source(self, grad_phi_x, grad_phi_y, Gamma):
+        """Explicit non-orthogonal diffusion source (deferred correction) per interior cell.
+
+        grad_phi_x, grad_phi_y: cell-centred gradient components, padded (M+2, M+2).
+        Gamma: diffusivity field, padded (M+2, M+2).
+        Returns array shape (M+2, M+2) with the divergence in interior cells.
+        """
+        s = self.s
+        gx = grad_phi_x
+        gy = grad_phi_y
+        eps = 1e-30
+
+        # x-faces
+        sx, sy = s.Sx_x, s.Sx_y
+        sm2 = s.Sx_mag * s.Sx_mag
+        alpha_x = np.divide(sm2, s.Sx_dot_dx + eps)
+        noc_x = sx - alpha_x * s.dx_x
+        noc_y = sy - alpha_x * s.dx_y
+        gx_f = 0.5 * (gx[:-1, 1:-1] + gx[1:, 1:-1])
+        gy_f = 0.5 * (gy[:-1, 1:-1] + gy[1:, 1:-1])
+        flux_noc_x = 0.5 * (Gamma[:-1, 1:-1] + Gamma[1:, 1:-1]) * (noc_x * gx_f + noc_y * gy_f)
+        flux_noc_x[~s.x_interior] = 0.0
+
+        # y-faces
+        sx, sy = s.Sy_x, s.Sy_y
+        sm2 = s.Sy_mag * s.Sy_mag
+        alpha_y = np.divide(sm2, s.Sy_dot_dy + eps)
+        noc_x = sx - alpha_y * s.dy_x
+        noc_y = sy - alpha_y * s.dy_y
+        gx_f = 0.5 * (gx[1:-1, :-1] + gx[1:-1, 1:])
+        gy_f = 0.5 * (gy[1:-1, :-1] + gy[1:-1, 1:])
+        flux_noc_y = 0.5 * (Gamma[1:-1, :-1] + Gamma[1:-1, 1:]) * (noc_x * gx_f + noc_y * gy_f)
+        flux_noc_y[~s.y_interior] = 0.0
+
+        src = np.zeros((self.m, self.n))
+        src[1:-1, 1:-1] = (flux_noc_x[1:] - flux_noc_x[:-1]
+                           + flux_noc_y[:, 1:] - flux_noc_y[:, :-1])
+        return src
 
 
 def cell_area(X_cor, Y_cor, i, j):

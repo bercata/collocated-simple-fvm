@@ -3,8 +3,9 @@
 A 2-D incompressible Navier–Stokes solver written from scratch in Python: finite volumes on a
 collocated grid, SIMPLE pressure–velocity coupling with Rhie–Chow interpolation, line-by-line
 TDMA and a sparse direct pressure solve. It runs on structured meshes that follow a curved
-top wall, and is checked on the lid-driven cavity against the numerical benchmark of
-Ghia, Ghia & Shin (1982) at Re = 100, 400 and 1000.
+top wall and on parallelogram (skewed, non-orthogonal) meshes, and is checked on the lid-driven
+cavity against the numerical benchmarks of Ghia, Ghia & Shin (1982) at Re = 100, 400 and 1000
+and, for the skewed cavity, Demirdžić, Lilek & Perić (1992) at 45°.
 
 ![Centre-line velocities against Ghia et al.](docs/figures/ghia_centerlines.png)
 
@@ -37,12 +38,12 @@ RMS deviation of the centre-line velocities from Ghia et al. (1982), 128 x 128 c
 | Part | Choice |
 |---|---|
 | Arrangement | Collocated, cell-centred, one ghost layer on the wall face centres |
-| Mesh | Structured; vertical grid lines, each divided evenly up to a curved lid (`linear`, `quadratic`, `crazy` or `rectangular`) |
+| Mesh | Structured; vertical grid lines, each divided evenly up to a curved lid (`linear`, `quadratic`, `crazy` or `rectangular`), or a `parallelogram` whose side walls lean right at `beta_deg` |
 | Convection | First-order upwind in the matrix; optional central differencing by deferred correction (`gamma_dc = 1`) |
-| Diffusion | Central, orthogonal part (`Gamma |S| / |d|`) |
+| Diffusion | Central; over-relaxed decomposition, implicit part `Gamma |S|^2 / (S·d)`, non-orthogonal remainder as an explicit (deferred) source |
 | Gradients | Gauss theorem over the four faces |
 | Coupling | SIMPLE, Rhie–Chow face velocities along the face normal; corrected face mass fluxes are stored and reused by the momentum equations, so every cell is conservative |
-| Pressure correction | Zero-gradient on all walls, one cell pinned; solved with SciPy sparse LU (or TDMA) |
+| Pressure correction | Zero-gradient on all walls, one cell pinned; solved with SciPy sparse LU (or TDMA); optional non-orthogonal correctors (`n_nonorth_correctors`) |
 | Momentum solve | Vectorised alternating-direction TDMA, two sweeps per outer iteration |
 | Relaxation | `alpha_u = 0.7`, `alpha_p = 0.3` |
 
@@ -100,14 +101,15 @@ same mesh.
 
 ## Limitations and next steps
 
-- No non-orthogonal correction for diffusion and pressure: exact on the square cavity, an
-  approximation on the curved lids. Because these terms are neglected, the curved-lid cases need
-  stronger under-relaxation on fine meshes (`alpha_u = 0.5`, `alpha_p = 0.2` on 64 x 64; the
-  defaults diverge there).
+- Non-orthogonal correction (over-relaxed, deferred) is included in the momentum diffusion and,
+  through `n_nonorth_correctors`, in the pressure correction. On the 45° parallelogram cavity it
+  reproduces the minimum stream function of Demirdžić et al. to 0.013 % (Re = 100) and 0.20 %
+  (Re = 1000) on 128 x 128 cells. `SimpleSolver.init_from` starts a finer parallelogram mesh from
+  a coarser solution (grid sequencing). The curved-lid relaxation settings were not re-tuned after
+  this change.
 - Steady, laminar, constant-property flow only.
 - Planned: transport of extra scalars through `SimpleFields2D.vars` (mixture fraction and a
-  progress variable) toward a steady flamelet model, variable density, and a non-orthogonal
-  correction.
+  progress variable) toward a steady flamelet model, and variable density.
 
 ## Project history
 

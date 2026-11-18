@@ -20,10 +20,16 @@ class SimpleSolver:
 
     def __init__(self, M=64, Re=100.0, L=1.0, H1=2.0, H2=2.0, shape="rectangular",
                  rho=1.0, lid_velocity=1.0, alpha_u=0.7, alpha_p=0.3, inner_sweeps=2,
-                 p_solver="direct", gamma_dc=0.0):
+                 p_solver="direct", gamma_dc=0.0, beta_deg=None,
+                 n_nonorth_correctors=0):
         self.M, self.Re, self.L = M, Re, L
         self.alpha_u, self.alpha_p = alpha_u, alpha_p
-        X, Y, Xc, Yc = setUpMesh(M, H1, H2, L, shape)
+        self.shape = shape
+        self.beta_deg = beta_deg
+        self.H1, self.H2 = H1, H2
+        side_len = H1 / 2.0 if shape == "parallelogram" else None
+        X, Y, Xc, Yc = setUpMesh(M, H1, H2, L, shape, beta_deg=beta_deg,
+                                  side_length=side_len)
         self.X, self.Y, self.X_cor, self.Y_cor = X, Y, Xc, Yc
         mu = rho * lid_velocity * L / Re
         self.fields = SimpleFields2D(X, Y, Xc, Yc, rho0=rho, mu0=mu, lid_velocity=lid_velocity)
@@ -32,12 +38,88 @@ class SimpleSolver:
                                                gamma_dc=gamma_dc)
         c = (M // 2 + 1, M // 2 + 1)
         self.pcorr = RhieChowPressureCorrection(self.stencil, X, Y, Xc, Yc,
-                                                reference=(c[0], c[1], 0.0), linear_solver=p_solver)
+                                                reference=(c[0], c[1], 0.0), linear_solver=p_solver,
+                                                n_nonorth_correctors=n_nonorth_correctors)
         self.corrector = PressureVelocityCorrector(self.stencil, Xc, Yc, gauge=c)
         self.mass_scale = rho * lid_velocity * L        # lid-driven mass-flux scale
         self.history = {"u": [], "v": [], "mass": []}
         self.wall_time = 0.0
         self.iterations = 0
+        self.status = "not run"
+
+    @classmethod
+    def init_from(cls, coarse, M=None, alpha_u=None, alpha_p=None):
+        """Create a finer solver initialised from a coarser converged solver.
+
+        U, V, P are interpolated bilinearly in logical (i, j) index coordinates.
+        Face mass fluxes are rebuilt from the interpolated velocities.
+        """
+        if M is None:
+            M = 2 * coarse.M
+        if coarse.shape != "parallelogram":
+            raise ValueError("init_from only supported for parallelogram meshes")
+        alpha_u = alpha_u if alpha_u is not None else coarse.alpha_u
+        alpha_p = alpha_p if alpha_p is not None else coarse.alpha_p
+
+        fine = cls(
+            M=M, Re=coarse.Re, L=coarse.L,
+            H1=coarse.H1, H2=coarse.H2,
+            shape=coarse.shape,
+            rho=coarse.fields.rho[1, 1],
+            lid_velocity=coarse.fields.lid_velocity,
+            alpha_u=alpha_u, alpha_p=alpha_p,
+            gamma_dc=coarse.momentum.gamma_dc,
+            beta_deg=coarse.beta_deg,
+            n_nonorth_correctors=coarse.pcorr.n_nonorth_correctors,
+        )
+
+        fc = coarse.fields
+        ff = fine.fields
+        Mc = coarse.M
+        L = coarse.L
+        side_len = coarse.H1 / 2.0
+        cosb = np.cos(np.radians(coarse.beta_deg))
+        sinb = np.sin(np.radians(coarse.beta_deg))
+
+        Xf, Yf = fine.X, fine.Y
+        eta_f = Yf / (side_len * sinb)
+        xi_f = (Xf - Yf * cosb / sinb) / L
+
+        i_float = np.clip(xi_f * Mc, 0.0, float(Mc))
+        j_float = np.clip(eta_f * Mc, 0.0, float(Mc))
+        i_lo = np.floor(i_float).astype(int)
+        j_lo = np.floor(j_float).astype(int)
+        i_hi = np.clip(i_lo + 1, 0, Mc + 1)
+        j_hi = np.clip(j_lo + 1, 0, Mc + 1)
+        tx = i_float - i_lo
+        ty = j_float - j_lo
+
+        def interp(cf):
+            v00 = cf[i_lo, j_lo]
+            v10 = cf[i_hi, j_lo]
+            v01 = cf[i_lo, j_hi]
+            v11 = cf[i_hi, j_hi]
+            return (1.0 - tx) * (1.0 - ty) * v00 + tx * (1.0 - ty) * v10 \
+                 + (1.0 - tx) * ty * v01 + tx * ty * v11
+
+        ff.U[...] = interp(fc.U)
+        ff.V[...] = interp(fc.V)
+        ff.P[...] = interp(fc.P)
+
+        # clamp boundaries
+        tx_lid = fine.X_cor[1:, -1] - fine.X_cor[:-1, -1]
+        ty_lid = fine.Y_cor[1:, -1] - fine.Y_cor[:-1, -1]
+        t_lid = np.hypot(tx_lid, ty_lid)
+        ff.U[1:-1, -1] = ff.lid_velocity * tx_lid / t_lid
+        ff.V[1:-1, -1] = ff.lid_velocity * ty_lid / t_lid
+        ff.U[1:-1, 0] = 0.0; ff.V[1:-1, 0] = 0.0
+        ff.U[0, :] = 0.0; ff.V[0, :] = 0.0
+        ff.U[-1, :] = 0.0; ff.V[-1, :] = 0.0
+        ff.U[0, -1] = ff.U[-1, -1] = ff.lid_velocity
+
+        ff.mflux_x, ff.mflux_y = fine.momentum.div.face_mass_fluxes(ff.U, ff.V, ff.rho)
+
+        return fine
 
     def step(self):
         f = self.fields
@@ -55,16 +137,26 @@ class SimpleSolver:
         mon = ConvergenceMonitor(atol=tol, rtol=0.0, max_it=max_outer + 1)
         t0 = time.perf_counter()
         converged = False
+        diverged_at = None
         for it in range(1, max_outer + 1):
             r = self.step()
             if verbose and it % verbose == 0:
                 print(f"  it {it:6d}  res u {r[0]:.2e}  v {r[1]:.2e}  mass {r[2]:.2e}")
+            if not np.all(np.isfinite(r)):
+                diverged_at = it
+                break
             if it > 10 and mon.record(max(r)):
                 converged = True
                 break
         self.iterations = it
         self.wall_time = time.perf_counter() - t0
         self.converged = converged
+        if diverged_at is not None:
+            self.status = f"diverged at iteration {diverged_at}"
+        elif converged:
+            self.status = "converged"
+        else:
+            self.status = "max_outer reached"
         return converged
 
     # ------------------------------------------------------------ post-processing
