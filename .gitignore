@@ -4,3 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 results/*.npz
 results_vv_log.txt
+results/*.json
+results/state_*/
+results/*.json
+results/state_*/

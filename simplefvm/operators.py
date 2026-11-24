@@ -80,24 +80,30 @@ class FVM_laplacian:
         self.s = stencil
         self.m, self.n = X.shape
 
-    def _conductance_x(self, Gamma):
+    def _conductance_x(self, Gamma, Gamma_face_x=None):
         s = self.s
         denom = np.where(s.x_interior, s.Sx_dot_dx, 1.0)
         Dx = x_face_avg(Gamma) * s.Sx_mag * s.Sx_mag / denom
-        Dx[~s.x_interior] = x_face_avg(Gamma)[~s.x_interior] * s.Sx_mag[~s.x_interior] ** 2 / s.Sx_dot_dx[~s.x_interior]
+        if Gamma_face_x is not None:
+            Dx[~s.x_interior] = Gamma_face_x[~s.x_interior] * s.Sx_mag[~s.x_interior] ** 2 / s.Sx_dot_dx[~s.x_interior]
+        else:
+            Dx[~s.x_interior] = x_face_avg(Gamma)[~s.x_interior] * s.Sx_mag[~s.x_interior] ** 2 / s.Sx_dot_dx[~s.x_interior]
         return Dx
 
-    def _conductance_y(self, Gamma):
+    def _conductance_y(self, Gamma, Gamma_face_y=None):
         s = self.s
         denom = np.where(s.y_interior, s.Sy_dot_dy, 1.0)
         Dy = y_face_avg(Gamma) * s.Sy_mag * s.Sy_mag / denom
-        Dy[~s.y_interior] = y_face_avg(Gamma)[~s.y_interior] * s.Sy_mag[~s.y_interior] ** 2 / s.Sy_dot_dy[~s.y_interior]
+        if Gamma_face_y is not None:
+            Dy[~s.y_interior] = Gamma_face_y[~s.y_interior] * s.Sy_mag[~s.y_interior] ** 2 / s.Sy_dot_dy[~s.y_interior]
+        else:
+            Dy[~s.y_interior] = y_face_avg(Gamma)[~s.y_interior] * s.Sy_mag[~s.y_interior] ** 2 / s.Sy_dot_dy[~s.y_interior]
         return Dy
 
-    def compute_face_diffusion(self, phi, Gamma):
+    def compute_face_diffusion(self, phi, Gamma, Gamma_face_x=None, Gamma_face_y=None):
         s = self.s
-        Dx = self._conductance_x(Gamma)
-        Dy = self._conductance_y(Gamma)
+        Dx = self._conductance_x(Gamma, Gamma_face_x)
+        Dy = self._conductance_y(Gamma, Gamma_face_y)
         out = {k: np.zeros((self.m, self.n)) for k in ("Diff_e", "Diff_w", "Diff_n", "Diff_s")}
         out["Diff_e"][1:-1, 1:-1] = Dx[1:]
         out["Diff_w"][1:-1, 1:-1] = Dx[:-1]
@@ -105,11 +111,14 @@ class FVM_laplacian:
         out["Diff_s"][1:-1, 1:-1] = Dy[:, :-1]
         return out
 
-    def nonorthogonal_correction_source(self, grad_phi_x, grad_phi_y, Gamma):
+    def nonorthogonal_correction_source(self, grad_phi_x, grad_phi_y, Gamma,
+                                        Gamma_face_x=None, Gamma_face_y=None):
         """Explicit non-orthogonal diffusion source (deferred correction) per interior cell.
 
         grad_phi_x, grad_phi_y: cell-centred gradient components, padded (M+2, M+2).
         Gamma: diffusivity field, padded (M+2, M+2).
+        Gamma_face_x, Gamma_face_y: optional face diffusivity arrays (shapes (M+1, M) and
+        (M, M+1)); when given they replace the arithmetic cell average on the faces.
         Returns array shape (M+2, M+2) with the divergence in interior cells.
         """
         s = self.s
@@ -125,7 +134,11 @@ class FVM_laplacian:
         noc_y = sy - alpha_x * s.dx_y
         gx_f = 0.5 * (gx[:-1, 1:-1] + gx[1:, 1:-1])
         gy_f = 0.5 * (gy[:-1, 1:-1] + gy[1:, 1:-1])
-        flux_noc_x = 0.5 * (Gamma[:-1, 1:-1] + Gamma[1:, 1:-1]) * (noc_x * gx_f + noc_y * gy_f)
+        if Gamma_face_x is not None:
+            gamma_x_f = Gamma_face_x
+        else:
+            gamma_x_f = 0.5 * (Gamma[:-1, 1:-1] + Gamma[1:, 1:-1])
+        flux_noc_x = gamma_x_f * (noc_x * gx_f + noc_y * gy_f)
         flux_noc_x[~s.x_interior] = 0.0
 
         # y-faces
@@ -136,7 +149,11 @@ class FVM_laplacian:
         noc_y = sy - alpha_y * s.dy_y
         gx_f = 0.5 * (gx[1:-1, :-1] + gx[1:-1, 1:])
         gy_f = 0.5 * (gy[1:-1, :-1] + gy[1:-1, 1:])
-        flux_noc_y = 0.5 * (Gamma[1:-1, :-1] + Gamma[1:-1, 1:]) * (noc_x * gx_f + noc_y * gy_f)
+        if Gamma_face_y is not None:
+            gamma_y_f = Gamma_face_y
+        else:
+            gamma_y_f = 0.5 * (Gamma[1:-1, :-1] + Gamma[1:-1, 1:])
+        flux_noc_y = gamma_y_f * (noc_x * gx_f + noc_y * gy_f)
         flux_noc_y[~s.y_interior] = 0.0
 
         src = np.zeros((self.m, self.n))
@@ -152,3 +169,26 @@ def cell_area(X_cor, Y_cor, i, j):
     x2, y2 = X_cor[i, j], Y_cor[i, j]
     x3, y3 = X_cor[i - 1, j], Y_cor[i - 1, j]
     return 0.5 * abs(x0 * y1 + x1 * y2 + x2 * y3 + x3 * y0 - y0 * x1 - y1 * x2 - y2 * x3 - y3 * x0)
+
+
+def deferred_correction_source(phi, mx, my, gamma_dc):
+    """Khosla-Rubin deferred-correction source per cell (padded grid).
+
+    Returns a (M+2, M+2) array where interior cells hold
+    gamma * div[ F_f * (phi_central - phi_upwind) ].
+    Caller subtracts this from the RHS of the upwind system::
+
+        dcsrc = deferred_correction_source(phi, mflux_x, mflux_y, gamma_dc)
+        ls.Sp[1:-1, 1:-1] -= dcsrc[1:-1, 1:-1]
+    """
+    g = gamma_dc
+    if g <= 0.0:
+        return np.zeros_like(phi)
+    P, N = phi[:-1, 1:-1], phi[1:, 1:-1]
+    cx = mx * (0.5 * (P + N) - np.where(mx > 0, P, N))
+    P, N = phi[1:-1, :-1], phi[1:-1, 1:]
+    cy = my * (0.5 * (P + N) - np.where(my > 0, P, N))
+    net = cx[1:] - cx[:-1] + cy[:, 1:] - cy[:, :-1]
+    out = np.zeros_like(phi)
+    out[1:-1, 1:-1] = g * net
+    return out

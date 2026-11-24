@@ -6,7 +6,7 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 from .linsys import FVLinearSystem
-from .operators import FVM_div, FVM_grad, FVM_laplacian
+from .operators import FVM_div, FVM_grad, FVM_laplacian, deferred_correction_source
 from .stencil import x_face_avg, y_face_avg
 
 
@@ -155,7 +155,9 @@ class MomentumEquationSolver:
         self.inner_sweeps = inner_sweeps
         self.residual = {}
 
-    def solve(self, fields, *, alpha: float = 0.7, component: str = "u"):
+    def solve(self, fields, *, alpha: float = 0.7, component: str = "u",
+              fx=None, fy=None, vel_scale=None, stress_source=None,
+              mu_face_x=None, mu_face_y=None):
         comp = component.lower()
         if comp not in ("u", "v"):
             raise ValueError("component must be 'u' or 'v'")
@@ -165,7 +167,9 @@ class MomentumEquationSolver:
 
         fluxes = self.div.compute_face_fluxes(var, fields.U, fields.V, fields.rho,
                                               mflux=(fields.mflux_x, fields.mflux_y))
-        diffs = self.lap.compute_face_diffusion(var, fields.mu)
+        diffs = self.lap.compute_face_diffusion(var, fields.mu,
+                                                Gamma_face_x=mu_face_x,
+                                                Gamma_face_y=mu_face_y)
 
         Nx, Ny = var.shape
         ls = FVLinearSystem(Nx, Ny)
@@ -177,14 +181,28 @@ class MomentumEquationSolver:
 
         # non-orthogonal diffusion correction
         gvx, gvy = self.grad.compute_gradient(var)
-        src_noc = self.lap.nonorthogonal_correction_source(gvx, gvy, fields.mu)
+        src_noc = self.lap.nonorthogonal_correction_source(gvx, gvy, fields.mu,
+                                                           Gamma_face_x=mu_face_x,
+                                                           Gamma_face_y=mu_face_y)
         ls.Sp[1:-1, 1:-1] += src_noc[1:-1, 1:-1]
+
+        # body force (per unit volume): Sp += f * vol
+        if comp == "u" and fx is not None:
+            ls.Sp[1:-1, 1:-1] += fx[1:-1, 1:-1] * self.stencil.vol
+        if comp == "v" and fy is not None:
+            ls.Sp[1:-1, 1:-1] += fy[1:-1, 1:-1] * self.stencil.vol
+        # extra stress source (explicit, full tensor minus laplacian)
+        if stress_source is not None:
+            ls.Sp[1:-1, 1:-1] += stress_source[1:-1, 1:-1]
 
         ls.apply_under_relax(phi_old=var, alpha=alpha)
 
-        # scaled residual before the inner solve (relaxation terms cancel at phi_old)
+        # scaled residual
         R = ls.residual(var)
-        scale = np.sum(np.abs(ls.Ap[1:-1, 1:-1] * var[1:-1, 1:-1])) + 1e-30
+        if vel_scale is not None:
+            scale = np.sum(np.abs(ls.Ap[1:-1, 1:-1])) * vel_scale + 1e-30
+        else:
+            scale = np.sum(np.abs(ls.Ap[1:-1, 1:-1] * var[1:-1, 1:-1])) + 1e-30
         self.residual[comp] = float(np.sum(np.abs(R)) / scale)
 
         self.tdma2d.solve_line(var, Aw=ls.Aw, Ap=ls.Ap, Ae=ls.Ae, As=ls.As, An=ls.An, Sp=ls.Sp,
@@ -196,13 +214,8 @@ class MomentumEquationSolver:
         gamma * F_f (phi_central - phi_upwind) from the current iterate is added to the source.
         At convergence the convective term is central (second order) for gamma = 1.
         Wall faces carry no mass flux, so they contribute nothing."""
-        g = self.gamma_dc
-        P, N = phi[:-1, 1:-1], phi[1:, 1:-1]                       # x-faces
-        cx = mx * (0.5 * (P + N) - np.where(mx > 0, P, N))
-        P, N = phi[1:-1, :-1], phi[1:-1, 1:]                       # y-faces
-        cy = my * (0.5 * (P + N) - np.where(my > 0, P, N))
-        net = cx[1:] - cx[:-1] + cy[:, 1:] - cy[:, :-1]            # net outflow correction per cell
-        ls.Sp[1:-1, 1:-1] -= g * net
+        dcsrc = deferred_correction_source(phi, mx, my, self.gamma_dc)
+        ls.Sp[1:-1, 1:-1] -= dcsrc[1:-1, 1:-1]
 
 
 # ====================================================================== pressure correction
@@ -219,46 +232,78 @@ class RhieChowPressureCorrection:
 
     def __init__(self, stencil, X, Y, X_cor, Y_cor, reference=(1, 1, 0.0),
                  tol=1e-8, max_inner=500, linear_solver="direct",
-                 n_nonorth_correctors=0):
+                 n_nonorth_correctors=0, consistent_rc=True, body_force_rc=False):
         self.s = stencil
         self.X, self.Y, self.X_cor, self.Y_cor = X, Y, X_cor, Y_cor
         self.reference = reference
         self.tol, self.max_inner = tol, max_inner
         self.linear_solver = linear_solver
         self.n_nonorth_correctors = n_nonorth_correctors
+        self.consistent_rc = consistent_rc
+        self.body_force_rc = body_force_rc
         self.grad = FVM_grad(X, Y, X_cor, Y_cor, stencil)
         self.m, self.n = X.shape
         self.mass_residual = np.inf
 
-    def _face_flux_x(self, f, gx, gy, DpU):
+    def _face_flux_x(self, f, gx, gy, DpU, U_old=None, V_old=None, mflux_old=None,
+                     alpha_u=None, first_iteration=False, fx=None, fy=None,
+                     fx_face=None, fy_face=None):
         s = self.s
         un_bar = (x_face_avg(f.U) * s.Sx_x + x_face_avg(f.V) * s.Sx_y) / s.Sx_mag
         g_avg = (x_face_avg(gx) * s.dx_x + x_face_avg(gy) * s.dx_y) / s.dx_mag
         g_dir = (f.P[1:, 1:-1] - f.P[:-1, 1:-1]) / s.dx_mag
+        if self.body_force_rc and fx is not None and fy is not None:
+            bf_avg = (x_face_avg(fx) * s.dx_x + x_face_avg(fy) * s.dx_y) / s.dx_mag
+            if fx_face is not None and fy_face is not None:
+                bf_dir = (fx_face * s.dx_x + fy_face * s.dx_y) / s.dx_mag
+            else:
+                bf_dir = bf_avg
+            g_avg = g_avg - bf_avg
+            g_dir = g_dir - bf_dir
         dpf = x_face_avg(DpU)
         rho_f = x_face_avg(f.rho)
         un = un_bar + dpf * (s.dx_mag * s.Sx_mag) * (g_avg - g_dir)
+        if self.consistent_rc and not first_iteration and alpha_u is not None and mflux_old is not None:
+            un_bar_old = (x_face_avg(U_old) * s.Sx_x + x_face_avg(V_old) * s.Sx_y) / s.Sx_mag
+            un_face_old = mflux_old / (rho_f * s.Sx_mag + 1e-30)
+            un = un + (1.0 - alpha_u) * (un_face_old - un_bar_old)
         m = rho_f * un * s.Sx_mag
         a = rho_f * dpf * s.Sx_mag ** 2
         m[~s.x_interior] = 0.0
         a[~s.x_interior] = 0.0
         return m, a
 
-    def _face_flux_y(self, f, gx, gy, DpV):
+    def _face_flux_y(self, f, gx, gy, DpV, U_old=None, V_old=None, mflux_old=None,
+                     alpha_u=None, first_iteration=False, fx=None, fy=None,
+                     fx_face=None, fy_face=None):
         s = self.s
         un_bar = (y_face_avg(f.U) * s.Sy_x + y_face_avg(f.V) * s.Sy_y) / s.Sy_mag
         g_avg = (y_face_avg(gx) * s.dy_x + y_face_avg(gy) * s.dy_y) / s.dy_mag
-        g_dir = (f.P[1:-1, 1:] - f.P[1:-1, :-1]) / s.dy_mag   # y-difference (was an x-difference)
+        g_dir = (f.P[1:-1, 1:] - f.P[1:-1, :-1]) / s.dy_mag
+        if self.body_force_rc and fx is not None and fy is not None:
+            bf_avg = (y_face_avg(fx) * s.dy_x + y_face_avg(fy) * s.dy_y) / s.dy_mag
+            if fx_face is not None and fy_face is not None:
+                bf_dir = (fx_face * s.dy_x + fy_face * s.dy_y) / s.dy_mag
+            else:
+                bf_dir = bf_avg
+            g_avg = g_avg - bf_avg
+            g_dir = g_dir - bf_dir
         dpf = y_face_avg(DpV)
         rho_f = y_face_avg(f.rho)
         un = un_bar + dpf * (s.dy_mag * s.Sy_mag) * (g_avg - g_dir)
+        if self.consistent_rc and not first_iteration and alpha_u is not None and mflux_old is not None:
+            un_bar_old = (y_face_avg(U_old) * s.Sy_x + y_face_avg(V_old) * s.Sy_y) / s.Sy_mag
+            un_face_old = mflux_old / (rho_f * s.Sy_mag + 1e-30)
+            un = un + (1.0 - alpha_u) * (un_face_old - un_bar_old)
         m = rho_f * un * s.Sy_mag
         a = rho_f * dpf * s.Sy_mag ** 2
         m[~s.y_interior] = 0.0
         a[~s.y_interior] = 0.0
         return m, a
 
-    def solve(self, fields):
+    def solve(self, fields, U_old=None, V_old=None, mflux_x_old=None, mflux_y_old=None,
+              alpha_u=None, first_iteration=False, fx=None, fy=None,
+              fx_face_x=None, fy_face_x=None, fx_face_y=None, fy_face_y=None):
         s = self.s
         f = fields
         DpU = np.zeros_like(f.U); DpU[1:-1, 1:-1] = 1.0 / (f.Ap_u[1:-1, 1:-1] + 1e-30)
@@ -268,8 +313,12 @@ class RhieChowPressureCorrection:
         f.DpU, f.DpV = DpU, DpV
 
         gx, gy = self.grad.compute_gradient(f.P)
-        mx, ax = self._face_flux_x(f, gx, gy, DpU)
-        my, ay = self._face_flux_y(f, gx, gy, DpV)
+        mx, ax = self._face_flux_x(f, gx, gy, DpU, U_old, V_old, mflux_x_old,
+                                   alpha_u, first_iteration, fx, fy,
+                                   fx_face_x, fy_face_x)
+        my, ay = self._face_flux_y(f, gx, gy, DpV, U_old, V_old, mflux_y_old,
+                                   alpha_u, first_iteration, fx, fy,
+                                   fx_face_y, fy_face_y)
 
         shp = (self.m, self.n)
         Aw, Ae, As, An, Ap, Sp = (np.zeros(shp) for _ in range(6))
@@ -320,6 +369,9 @@ class RhieChowPressureCorrection:
                         break
 
             if k < self.n_nonorth_correctors:
+                # zero-gradient p' ghosts BEFORE gradient (were stale/zero from init)
+                p_prime[0, :], p_prime[-1, :] = p_prime[1, :], p_prime[-2, :]
+                p_prime[:, 0], p_prime[:, -1] = p_prime[:, 1], p_prime[:, -2]
                 gpx, gpy = self.grad.compute_gradient(p_prime)
                 # x-face non-orthogonal mass flux:
                 #   dnoc = rho_f * (V/a_P)_f * (grad p')_f . (S_f - alpha * d_f)
@@ -363,16 +415,21 @@ class RhieChowPressureCorrection:
 
 class PressureVelocityCorrector:
     """SIMPLE correction step (same order as the first version):
-    1. P <- P + alpha_p p'   2. u, v <- u, v - (V/a_P) grad p'   3. zero-gradient P ghosts
+    1. P <- P + alpha_p p'   2. u, v <- u, v - (V/a_P) grad p'   3. P ghosts
     4. gauge: subtract the pressure of one interior cell.
+
+    Without body force the ghosts are zero-gradient; with body force they
+    satisfy the hydrostatic balance  dp/dn = f.n  at each wall.
     """
 
     def __init__(self, stencil, X_cor, Y_cor, gauge=(2, 3)):
         self.s = stencil
+        self.X = stencil.X
+        self.Y = stencil.Y
         self.grad = FVM_grad(stencil.X, stencil.Y, X_cor, Y_cor, stencil)
         self.gauge = gauge
 
-    def apply(self, fields, p_prime, alpha_p=0.3):
+    def apply(self, fields, p_prime, alpha_p=0.3, fx=None, fy=None):
         f = fields
         I = (slice(1, -1), slice(1, -1))
         f.P[:, :] += alpha_p * p_prime
@@ -380,6 +437,121 @@ class PressureVelocityCorrector:
         f.U[I] -= f.DpU[I] * self.s.vol * gpx[I]
         f.V[I] -= f.DpV[I] * self.s.vol * gpy[I]
         P = f.P
-        P[:, 0], P[:, -1] = P[:, 1], P[:, -2]
-        P[0, :], P[-1, :] = P[1, :], P[-2, :]
+        self._set_pressure_ghosts(P, fx, fy)
         P -= P[self.gauge]
+
+    def _set_pressure_ghosts(self, P, fx=None, fy=None):
+        """Set pressure ghosts.  Without body force: zero-gradient (existing behaviour).
+        With body force: P_ghost = P_P + f_w . (x_ghost - x_P)."""
+        X, Y = self.X, self.Y
+        if fx is None or fy is None:
+            P[:, 0], P[:, -1] = P[:, 1], P[:, -2]
+            P[0, :], P[-1, :] = P[1, :], P[-2, :]
+            return
+        # S wall (j=0): ghost below first interior cell
+        P[1:-1, 0] = (P[1:-1, 1]
+                      + fx[1:-1, 0] * (X[1:-1, 0] - X[1:-1, 1])
+                      + fy[1:-1, 0] * (Y[1:-1, 0] - Y[1:-1, 1]))
+        # N wall (j=-1): ghost above last interior cell
+        P[1:-1, -1] = (P[1:-1, -2]
+                       + fx[1:-1, -1] * (X[1:-1, -1] - X[1:-1, -2])
+                       + fy[1:-1, -1] * (Y[1:-1, -1] - Y[1:-1, -2]))
+        # W wall (i=0): ghost left of first interior cell
+        P[0, 1:-1] = (P[1, 1:-1]
+                      + fx[0, 1:-1] * (X[0, 1:-1] - X[1, 1:-1])
+                      + fy[0, 1:-1] * (Y[0, 1:-1] - Y[1, 1:-1]))
+        # E wall (i=-1): ghost right of last interior cell
+        P[-1, 1:-1] = (P[-2, 1:-1]
+                       + fx[-1, 1:-1] * (X[-1, 1:-1] - X[-2, 1:-1])
+                       + fy[-1, 1:-1] * (Y[-1, 1:-1] - Y[-2, 1:-1]))
+
+
+# ========================================================================= balanced body force
+def compute_balanced_body_force(T, buoy, T_ref, stencil, fx_out, fy_out):
+    """Fill *fx_out*, *fy_out* (padded) with the face-consistent body force.
+
+    The force at each interior cell is built from face-interpolated values
+    so that  p_N - p_P = f_f . d_f  on every face (discrete hydrostatic)
+    implies  f_balanced = Gauss_gradient(p).  The formula (Francois et al. / Mencinger & Zun):
+
+        f_P = 1/(2 V_P) Σ_interior (f_f . d_f) S_f  +  1/V_P Σ_walls (f_w . d_f) S_f
+
+    All S_f and d_f come from the stencil (+index).  The sign rule (both d and S
+    point OUT of cell P, product unchanged) means every face contributes
+    +(f . d) S to both adjacent cells — no minus sign for west/south faces.
+
+    *stencil.vol* has shape (M, M) — interior cells only, 0-indexed.
+    Interior cell (i, j) in 1-based indexing maps to vol[i-1, j-1].
+
+    Wall faces use the ghost (wall-face) temperature directly, not 0.5*(T_g + T_P).
+    Ghost force values (wall FACE force) are stored in the output for use by
+    _set_pressure_ghosts.
+    """
+    s = stencil
+    M = s.M
+    fx_out.fill(0.0)
+    fy_out.fill(0.0)
+
+    # ---- face-interpolated y-force (fx=0 for buoyancy) ----
+    # interior: arithmetic mean of the two cell values
+    Tx = 0.5 * (T[:-1, 1:-1] + T[1:, 1:-1])       # x-faces  (M+1, M)
+    Ty = 0.5 * (T[1:-1, :-1] + T[1:-1, 1:])       # y-faces  (M, M+1)
+    # wall faces: use ghost value directly  (T at wall face centre)
+    Tx[0, :] = T[0, 1:-1];  Tx[M, :] = T[-1, 1:-1]
+    Ty[:, 0] = T[1:-1, 0];  Ty[:, M] = T[1:-1, -1]
+    fy_x = buoy * (Tx - T_ref)
+    fy_y = buoy * (Ty - T_ref)
+
+    # ---- interior x-faces (grid_line i = 1 .. M-1) ----
+    fd = fy_x[1:M, :] * s.dx_y[1:M, :]             # (M-1, M)
+    sx = s.Sx_x[1:M, :]; sy = s.Sx_y[1:M, :]
+    fx_out[1:M, 1:-1] += fd * sx / (2.0 * s.vol[:M - 1, :])
+    fy_out[1:M, 1:-1] += fd * sy / (2.0 * s.vol[:M - 1, :])
+    fx_out[2:M + 1, 1:-1] += fd * sx / (2.0 * s.vol[1:M, :])
+    fy_out[2:M + 1, 1:-1] += fd * sy / (2.0 * s.vol[1:M, :])
+
+    # ---- interior y-faces (grid_line j = 1 .. M-1) ----
+    fd = fy_y[:, 1:M] * s.dy_y[:, 1:M]             # (M, M-1)
+    sx = s.Sy_x[:, 1:M]; sy = s.Sy_y[:, 1:M]
+    fx_out[1:-1, 1:M] += fd * sx / (2.0 * s.vol[:, :M - 1])
+    fy_out[1:-1, 1:M] += fd * sy / (2.0 * s.vol[:, :M - 1])
+    fx_out[1:-1, 2:M + 1] += fd * sx / (2.0 * s.vol[:, 1:M])
+    fy_out[1:-1, 2:M + 1] += fd * sy / (2.0 * s.vol[:, 1:M])
+
+    # ---- wall faces (all four, one block) ----
+    # West (i=0)
+    fd = fy_x[0, :] * s.dx_y[0, :]
+    fx_out[1, 1:-1] += fd * s.Sx_x[0, :] / s.vol[0, :]
+    fy_out[1, 1:-1] += fd * s.Sx_y[0, :] / s.vol[0, :]
+    fy_out[0, 1:-1] = fy_x[0, :]     # west ghost fy  (wall FACE force)
+    # East (i=M)
+    fd = fy_x[M, :] * s.dx_y[M, :]
+    fx_out[M, 1:-1] += fd * s.Sx_x[M, :] / s.vol[M - 1, :]
+    fy_out[M, 1:-1] += fd * s.Sx_y[M, :] / s.vol[M - 1, :]
+    fy_out[-1, 1:-1] = fy_x[M, :]    # east ghost fy
+    # South (j=0)
+    fd = fy_y[:, 0] * s.dy_y[:, 0]
+    fx_out[1:-1, 1] += fd * s.Sy_x[:, 0] / s.vol[:, 0]
+    fy_out[1:-1, 1] += fd * s.Sy_y[:, 0] / s.vol[:, 0]
+    fy_out[1:-1, 0] = fy_y[:, 0]     # south ghost fy
+    # North (j=M)
+    fd = fy_y[:, M] * s.dy_y[:, M]
+    fx_out[1:-1, M] += fd * s.Sy_x[:, M] / s.vol[:, M - 1]
+    fy_out[1:-1, M] += fd * s.Sy_y[:, M] / s.vol[:, M - 1]
+    fy_out[1:-1, -1] = fy_y[:, M]    # north ghost fy
+
+
+def compute_face_forces(T, buoy, T_ref):
+    """Return (fy_face_x, fy_face_y) with the body-force y-component at FACE centres.
+
+    fy_face_x  shape (M+1, M)   — x-face y-force
+    fy_face_y  shape (M, M+1)   — y-face y-force
+
+    Interior faces use linear interpolation; wall faces use the ghost (wall-face) T.
+    """
+    M = T.shape[0] - 2
+    Tx = 0.5 * (T[:-1, 1:-1] + T[1:, 1:-1])        # (M+1, M)
+    Ty = 0.5 * (T[1:-1, :-1] + T[1:-1, 1:])        # (M, M+1)
+    Tx[0, :] = T[0, 1:-1];  Tx[M, :] = T[-1, 1:-1]
+    Ty[:, 0] = T[1:-1, 0];  Ty[:, M] = T[1:-1, -1]
+    return buoy * (Tx - T_ref), buoy * (Ty - T_ref)
